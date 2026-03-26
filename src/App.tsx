@@ -187,10 +187,27 @@ export default function App() {
   const handleTTS = async (text: string, messageId: string) => {
     if (isSpeaking === messageId) {
       setIsSpeaking(null);
+      if (currentAudioSourceRef.current) {
+        currentAudioSourceRef.current.stop();
+        currentAudioSourceRef.current = null;
+      }
       return;
     }
 
     setIsSpeaking(messageId);
+    
+    const AudioContextClass = window.AudioContext || (window as any).webkitAudioContext;
+    let audioCtx: AudioContext;
+    try {
+      audioCtx = new AudioContextClass({ sampleRate: 24000 });
+    } catch (e) {
+      audioCtx = new AudioContextClass();
+    }
+    
+    if (audioCtx.state === 'suspended') {
+      await audioCtx.resume();
+    }
+    
     const audioData = await generateSpeech(text);
     if (audioData) {
       try {
@@ -200,10 +217,8 @@ export default function App() {
           bytes[i] = binaryString.charCodeAt(i);
         }
         
-        const pcmData = new Int16Array(bytes.buffer);
-        
-        const AudioContextClass = window.AudioContext || (window as any).webkitAudioContext;
-        const audioCtx = new AudioContextClass({ sampleRate: 24000 });
+        const validLength = bytes.length % 2 === 0 ? bytes.length : bytes.length - 1;
+        const pcmData = new Int16Array(bytes.buffer, 0, validLength / 2);
         
         const audioBuffer = audioCtx.createBuffer(1, pcmData.length, 24000);
         const channelData = audioBuffer.getChannelData(0);
@@ -214,17 +229,21 @@ export default function App() {
         const source = audioCtx.createBufferSource();
         source.buffer = audioBuffer;
         source.connect(audioCtx.destination);
+        currentAudioSourceRef.current = source;
         source.onended = () => {
           setIsSpeaking(null);
+          currentAudioSourceRef.current = null;
           audioCtx.close();
         };
         source.start();
       } catch (e) {
         console.error("Error playing TTS audio:", e);
         setIsSpeaking(null);
+        audioCtx.close();
       }
     } else {
       setIsSpeaking(null);
+      audioCtx.close();
     }
   };
 
@@ -235,17 +254,23 @@ export default function App() {
         throw new Error("আপনার ব্রাউজারটি মাইক্রোফোন ব্যবহারের অনুমতি দিচ্ছে না বা এটি একটি সুরক্ষিত সংযোগ (HTTPS) নয়।");
       }
 
-      const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
-      streamRef.current = stream;
-      setIsLiveMode(true);
-      isLiveModeRef.current = true;
-      
       const AudioContextClass = window.AudioContext || (window as any).webkitAudioContext;
-      const audioContext = new AudioContextClass({ sampleRate: 16000 });
+      let audioContext: AudioContext;
+      try {
+        audioContext = new AudioContextClass({ sampleRate: 16000 });
+      } catch (e) {
+        audioContext = new AudioContextClass();
+      }
+      
       if (audioContext.state === 'suspended') {
         await audioContext.resume();
       }
       audioContextRef.current = audioContext;
+
+      const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+      streamRef.current = stream;
+      setIsLiveMode(true);
+      isLiveModeRef.current = true;
       
       const sessionPromise = getLiveSession({
         onopen: () => {
@@ -266,7 +291,7 @@ export default function App() {
             }
             const base64Data = btoa(binary);
             sessionPromise.then(session => {
-              session.sendRealtimeInput({ audio: { data: base64Data, mimeType: 'audio/pcm;rate=16000' } });
+              session.sendRealtimeInput({ audio: { data: base64Data, mimeType: `audio/pcm;rate=${audioContext.sampleRate}` } });
             }).catch(err => console.error("Error sending audio:", err));
           };
           
@@ -350,7 +375,7 @@ export default function App() {
     }
   };
 
-  const playNextChunk = () => {
+  const playNextChunk = async () => {
     if (!audioContextRef.current || isPlayingRef.current || audioQueueRef.current.length === 0) return;
     
     isPlayingRef.current = true;
@@ -365,7 +390,7 @@ export default function App() {
     }
     
     if (audioContextRef.current.state === 'suspended') {
-      audioContextRef.current.resume();
+      await audioContextRef.current.resume();
     }
     
     const audioBuffer = audioContextRef.current.createBuffer(1, chunk.length, sampleRate);
