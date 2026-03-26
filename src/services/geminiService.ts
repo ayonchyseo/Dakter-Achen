@@ -72,19 +72,35 @@ Follow this structure for specific medical conditions:
 
 Disclaimer: This is for informational purposes only. Always consult a doctor for medical emergencies.`;
 
-export async function getHealthAdvice(userQuery: string, useThinking = true) {
+export async function getHealthAdvice(userQuery: string, useThinking = true, imageBase64?: string) {
   // Check for predefined answers first to reduce API calls
-  const predefined = getPredefinedAnswer(userQuery);
-  if (predefined) {
-    return predefined;
+  if (!imageBase64) {
+    const predefined = getPredefinedAnswer(userQuery);
+    if (predefined) {
+      return predefined;
+    }
   }
 
   try {
     const model = useThinking ? "gemini-3.1-pro-preview" : "gemini-3-flash-preview";
     
+    const parts: any[] = [{ text: userQuery }];
+    
+    if (imageBase64) {
+      const matches = imageBase64.match(/^data:([A-Za-z-+\/]+);base64,(.+)$/);
+      if (matches && matches.length === 3) {
+        parts.unshift({
+          inlineData: {
+            mimeType: matches[1],
+            data: matches[2]
+          }
+        });
+      }
+    }
+    
     const response = await ai.models.generateContent({
       model: model,
-      contents: userQuery,
+      contents: { parts },
       config: {
         systemInstruction: SYSTEM_INSTRUCTION,
         thinkingConfig: useThinking ? { thinkingLevel: ThinkingLevel.HIGH } : undefined,
@@ -100,9 +116,22 @@ export async function getHealthAdvice(userQuery: string, useThinking = true) {
     
     // Fallback: Try without tools or thinking if it failed
     try {
+      const parts: any[] = [{ text: userQuery }];
+      if (imageBase64) {
+        const matches = imageBase64.match(/^data:([A-Za-z-+\/]+);base64,(.+)$/);
+        if (matches && matches.length === 3) {
+          parts.unshift({
+            inlineData: {
+              mimeType: matches[1],
+              data: matches[2]
+            }
+          });
+        }
+      }
+
       const fallbackResponse = await ai.models.generateContent({
         model: "gemini-3-flash-preview",
-        contents: userQuery,
+        contents: { parts },
         config: {
           systemInstruction: SYSTEM_INSTRUCTION,
         },

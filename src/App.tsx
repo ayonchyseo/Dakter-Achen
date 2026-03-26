@@ -1,5 +1,5 @@
 import React, { useState, useRef, useEffect } from 'react';
-import { Send, Activity, AlertCircle, RefreshCw, Heart, Mic, MicOff, Calculator, Dumbbell, BookOpen, Volume2, Brain, Radio } from 'lucide-react';
+import { Send, Activity, AlertCircle, RefreshCw, Heart, Mic, MicOff, Calculator, Dumbbell, BookOpen, Volume2, Brain, Radio, Image as ImageIcon, X } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
 import { getHealthAdvice, generateSpeech, getLiveSession } from './services/geminiService';
 import BMICalculator from './components/BMICalculator';
@@ -11,6 +11,7 @@ interface Message {
   id: string;
   role: 'user' | 'model';
   content: string;
+  image?: string;
 }
 
 export default function App() {
@@ -31,12 +32,18 @@ export default function App() {
   const [isLiveMode, setIsLiveMode] = useState(false);
   const [isSpeaking, setIsSpeaking] = useState<string | null>(null);
   const [liveError, setLiveError] = useState<string | null>(null);
+  const [selectedImage, setSelectedImage] = useState<string | null>(null);
   const messagesEndRef = useRef<HTMLDivElement>(null);
+  const fileInputRef = useRef<HTMLInputElement>(null);
   const recognitionRef = useRef<any>(null);
   const audioContextRef = useRef<AudioContext | null>(null);
   const liveSessionRef = useRef<any>(null);
   const audioQueueRef = useRef<Int16Array[]>([]);
   const isPlayingRef = useRef(false);
+  const isLiveModeRef = useRef(false);
+  const audioSourceRef = useRef<MediaStreamAudioSourceNode | null>(null);
+  const audioProcessorRef = useRef<ScriptProcessorNode | null>(null);
+  const streamRef = useRef<MediaStream | null>(null);
 
   useEffect(() => {
     if (typeof window !== 'undefined' && ('webkitSpeechRecognition' in window || 'SpeechRecognition' in window)) {
@@ -85,25 +92,46 @@ export default function App() {
     scrollToBottom();
   }, [messages]);
 
+  const handleImageUpload = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (file) {
+      const reader = new FileReader();
+      reader.onloadend = () => {
+        setSelectedImage(reader.result as string);
+      };
+      reader.readAsDataURL(file);
+    }
+  };
+
+  const removeImage = () => {
+    setSelectedImage(null);
+    if (fileInputRef.current) {
+      fileInputRef.current.value = '';
+    }
+  };
+
   const handleSend = async () => {
     await handleSendWithText(input);
   };
 
   const handleSendWithText = async (text: string) => {
-    if (!text.trim() || isLoading) return;
+    if ((!text.trim() && !selectedImage) || isLoading) return;
 
     const userMessage: Message = {
       id: Date.now().toString(),
       role: 'user',
-      content: text.trim(),
+      content: text.trim() || 'এই ছবিটি দেখুন।',
+      image: selectedImage || undefined,
     };
 
     setMessages((prev) => [...prev, userMessage]);
     setInput('');
+    const imageToSend = selectedImage;
+    removeImage();
     setIsLoading(true);
 
     try {
-      const advice = await getHealthAdvice(userMessage.content, useThinking);
+      const advice = await getHealthAdvice(userMessage.content, useThinking, imageToSend || undefined);
       
       const botMessage: Message = {
         id: (Date.now() + 1).toString(),
@@ -133,11 +161,36 @@ export default function App() {
     setIsSpeaking(messageId);
     const audioData = await generateSpeech(text);
     if (audioData) {
-      const audioBlob = await fetch(`data:audio/wav;base64,${audioData}`).then(r => r.blob());
-      const audioUrl = URL.createObjectURL(audioBlob);
-      const audio = new Audio(audioUrl);
-      audio.onended = () => setIsSpeaking(null);
-      audio.play();
+      try {
+        const binaryString = atob(audioData);
+        const bytes = new Uint8Array(binaryString.length);
+        for (let i = 0; i < binaryString.length; i++) {
+          bytes[i] = binaryString.charCodeAt(i);
+        }
+        
+        const pcmData = new Int16Array(bytes.buffer);
+        
+        const AudioContextClass = window.AudioContext || (window as any).webkitAudioContext;
+        const audioCtx = new AudioContextClass({ sampleRate: 24000 });
+        
+        const audioBuffer = audioCtx.createBuffer(1, pcmData.length, 24000);
+        const channelData = audioBuffer.getChannelData(0);
+        for (let i = 0; i < pcmData.length; i++) {
+          channelData[i] = pcmData[i] / 0x7FFF;
+        }
+        
+        const source = audioCtx.createBufferSource();
+        source.buffer = audioBuffer;
+        source.connect(audioCtx.destination);
+        source.onended = () => {
+          setIsSpeaking(null);
+          audioCtx.close();
+        };
+        source.start();
+      } catch (e) {
+        console.error("Error playing TTS audio:", e);
+        setIsSpeaking(null);
+      }
     } else {
       setIsSpeaking(null);
     }
@@ -151,30 +204,37 @@ export default function App() {
       }
 
       const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+      streamRef.current = stream;
       setIsLiveMode(true);
+      isLiveModeRef.current = true;
       
       const AudioContextClass = window.AudioContext || (window as any).webkitAudioContext;
       const audioContext = new AudioContextClass({ sampleRate: 16000 });
       audioContextRef.current = audioContext;
       
-      const session = await getLiveSession({
+      const sessionPromise = getLiveSession({
         onopen: () => {
           const source = audioContext.createMediaStreamSource(stream);
           const processor = audioContext.createScriptProcessor(4096, 1, 1);
           
           processor.onaudioprocess = (e) => {
-            if (!isLiveMode) return;
+            if (!isLiveModeRef.current) return;
             const inputData = e.inputBuffer.getChannelData(0);
             const pcmData = new Int16Array(inputData.length);
             for (let i = 0; i < inputData.length; i++) {
               pcmData[i] = Math.max(-1, Math.min(1, inputData[i])) * 0x7FFF;
             }
             const base64Data = btoa(String.fromCharCode(...new Uint8Array(pcmData.buffer)));
-            session.sendRealtimeInput({ audio: { data: base64Data, mimeType: 'audio/pcm;rate=16000' } });
+            sessionPromise.then(session => {
+              session.sendRealtimeInput({ audio: { data: base64Data, mimeType: 'audio/pcm;rate=16000' } });
+            }).catch(err => console.error("Error sending audio:", err));
           };
           
           source.connect(processor);
           processor.connect(audioContext.destination);
+          
+          audioSourceRef.current = source;
+          audioProcessorRef.current = processor;
         },
         onmessage: async (message: LiveServerMessage) => {
           if (message.serverContent?.modelTurn?.parts[0]?.inlineData?.data) {
@@ -201,9 +261,11 @@ export default function App() {
         },
         onclose: () => {
           setIsLiveMode(false);
+          isLiveModeRef.current = false;
         }
       });
       
+      const session = await sessionPromise;
       liveSessionRef.current = session;
     } catch (error: any) {
       console.error("Live mode error:", error);
@@ -249,8 +311,31 @@ export default function App() {
 
   const stopLiveMode = () => {
     setIsLiveMode(false);
+    isLiveModeRef.current = false;
+    
+    if (audioProcessorRef.current) {
+      audioProcessorRef.current.disconnect();
+      audioProcessorRef.current = null;
+    }
+    if (audioSourceRef.current) {
+      audioSourceRef.current.disconnect();
+      audioSourceRef.current = null;
+    }
+    if (streamRef.current) {
+      streamRef.current.getTracks().forEach(track => track.stop());
+      streamRef.current = null;
+    }
+    
     liveSessionRef.current?.close();
-    audioContextRef.current?.close();
+    liveSessionRef.current = null;
+    
+    if (audioContextRef.current?.state !== 'closed') {
+      audioContextRef.current?.close();
+    }
+    audioContextRef.current = null;
+    
+    audioQueueRef.current = [];
+    isPlayingRef.current = false;
   };
 
   const commonSymptoms = [
@@ -389,6 +474,9 @@ export default function App() {
                     ? 'bg-primary text-white rounded-tr-none' 
                     : 'bg-white text-slate-800 rounded-tl-none border border-slate-100'
                 }`}>
+                  {message.image && (
+                    <img src={message.image} alt="Uploaded" className="max-w-full h-auto rounded-lg mb-3" />
+                  )}
                   <div className="plain-text-response">
                     {message.content}
                   </div>
@@ -446,6 +534,17 @@ export default function App() {
           </div>
 
           <div className="relative">
+            {selectedImage && (
+              <div className="absolute -top-20 left-0 bg-white p-2 rounded-xl border border-slate-200 shadow-sm flex items-start gap-2 z-10">
+                <img src={selectedImage} alt="Selected" className="h-16 w-16 object-cover rounded-lg" />
+                <button 
+                  onClick={removeImage}
+                  className="bg-slate-100 hover:bg-rose-100 text-slate-500 hover:text-rose-600 p-1 rounded-full transition-colors"
+                >
+                  <X size={14} />
+                </button>
+              </div>
+            )}
             {isListening && (
               <div className="absolute -top-8 left-0 right-0 flex justify-center">
                 <div className="bg-rose-500 text-white text-[10px] px-2 py-0.5 rounded-full animate-pulse flex items-center gap-1">
@@ -465,8 +564,24 @@ export default function App() {
                 }
               }}
               placeholder="আপনার সমস্যার কথা এখানে লিখুন..."
-              className="w-full p-4 pr-24 bg-slate-50 border border-slate-200 rounded-2xl focus:outline-none focus:ring-2 focus:ring-primary/20 focus:border-primary transition-all resize-none text-base"
+              className="w-full p-4 pl-12 pr-24 bg-slate-50 border border-slate-200 rounded-2xl focus:outline-none focus:ring-2 focus:ring-primary/20 focus:border-primary transition-all resize-none text-base"
             />
+            <div className="absolute left-2 top-1/2 -translate-y-1/2 flex items-center">
+              <input 
+                type="file" 
+                accept="image/*" 
+                className="hidden" 
+                ref={fileInputRef}
+                onChange={handleImageUpload}
+              />
+              <button
+                onClick={() => fileInputRef.current?.click()}
+                className="p-2.5 text-slate-400 hover:text-primary hover:bg-primary-light rounded-xl transition-all"
+                title="ছবি আপলোড করুন"
+              >
+                <ImageIcon size={20} />
+              </button>
+            </div>
             <div className="absolute right-2 top-1/2 -translate-y-1/2 flex items-center gap-1">
               <button
                 onClick={toggleListening}
@@ -479,7 +594,7 @@ export default function App() {
               </button>
               <button
                 onClick={handleSend}
-                disabled={!input.trim() || isLoading}
+                disabled={(!input.trim() && !selectedImage) || isLoading}
                 className="p-2.5 bg-primary text-white rounded-xl hover:bg-primary-dark disabled:opacity-50 transition-all shadow-md"
               >
                 <Send size={20} />
