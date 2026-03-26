@@ -1,0 +1,5 @@
+{
+  "name": "Dakter Achen",
+  "description": "একটি সহজ বাংলা এআই স্বাস্থ্য সহকারী যা সাধারণ স্বাস্থ্য সমস্যার জন্য ঘরোয়া সমাধান এবং পরামর্শ প্রদান করে।",
+  "requestFramePermissions": ["microphone"]
+}

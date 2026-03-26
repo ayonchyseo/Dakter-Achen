@@ -1,0 +1,27 @@
+@import url('https://fonts.googleapis.com/css2?family=Hind+Siliguri:wght@300;400;500;600;700&family=Inter:wght@400;500;600&display=swap');
+@import "tailwindcss";
+
+@theme {
+  --font-sans: "Hind Siliguri", "Inter", ui-sans-serif, system-ui, sans-serif;
+  --font-mono: "JetBrains Mono", ui-monospace, SFMono-Regular, monospace;
+  
+  --color-primary: #0d9488; /* Teal-600 */
+  --color-primary-dark: #0f766e; /* Teal-700 */
+  --color-primary-light: #f0fdfa; /* Teal-50 */
+}
+
+body {
+  @apply bg-slate-50 text-slate-900 antialiased;
+}
+
+.plain-text-response {
+  @apply whitespace-pre-wrap font-sans leading-relaxed text-slate-700;
+}
+
+.scrollbar-hide::-webkit-scrollbar {
+  display: none;
+}
+.scrollbar-hide {
+  -ms-overflow-style: none;
+  scrollbar-width: none;
+}
