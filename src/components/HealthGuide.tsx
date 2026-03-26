@@ -164,16 +164,17 @@ export default function HealthGuide({ onClose }: HealthGuideProps) {
                   <button
                     key={idx}
                     onClick={() => setSelectedAilment(ailment)}
-                    className="flex flex-col p-5 bg-slate-50 border border-slate-100 rounded-2xl hover:border-primary/30 hover:shadow-md transition-all text-left group"
+                    className="flex flex-col p-5 bg-white border border-slate-200 rounded-2xl hover:border-primary/40 hover:shadow-lg transition-all text-left group relative overflow-hidden"
                   >
-                    <div className={`${ailment.color} text-white p-3 rounded-xl w-fit mb-4 shadow-lg shadow-black/5`}>
+                    <div className="absolute top-0 right-0 w-24 h-24 bg-gradient-to-br from-slate-50 to-transparent rounded-bl-full -z-10 opacity-50 group-hover:scale-110 transition-transform" />
+                    <div className={`${ailment.color} text-white p-3.5 rounded-2xl w-fit mb-4 shadow-md`}>
                       {ailment.icon}
                     </div>
                     <h3 className="text-lg font-bold text-slate-800 mb-2 group-hover:text-primary transition-colors">
                       {ailment.title}
                     </h3>
-                    <div className="mt-auto flex items-center text-primary text-xs font-bold gap-1">
-                      লক্ষণ ও প্রতিকার দেখুন <ChevronRight size={14} />
+                    <div className="mt-auto flex items-center text-primary text-sm font-semibold gap-1 opacity-80 group-hover:opacity-100 transition-opacity">
+                      লক্ষণ ও প্রতিকার দেখুন <ChevronRight size={16} />
                     </div>
                   </button>
                 ))}
@@ -232,10 +233,10 @@ export default function HealthGuide({ onClose }: HealthGuideProps) {
                   </div>
                 </div>
 
-                <div className="bg-blue-50 p-4 rounded-2xl border border-blue-100 flex items-start gap-3">
-                  <AlertCircle className="text-blue-600 shrink-0 mt-0.5" size={18} />
-                  <p className="text-blue-800 text-xs leading-relaxed">
-                    <strong>সতর্কতা:</strong> ঘরোয়া প্রতিকার শুধুমাত্র প্রাথমিক আরামের জন্য। যদি সমস্যা ৩ দিনের বেশি স্থায়ী হয় বা তীব্র হয়, তবে অবশ্যই বিশেষজ্ঞ ডাক্তারের পরামর্শ নিন।
+                <div className="bg-amber-50 p-4 rounded-2xl border border-amber-200 flex items-start gap-3 shadow-sm mt-6">
+                  <AlertCircle className="text-amber-600 shrink-0 mt-0.5" size={20} />
+                  <p className="text-amber-800 text-sm leading-relaxed">
+                    <strong className="font-semibold text-amber-900">সতর্কতা:</strong> ঘরোয়া প্রতিকার শুধুমাত্র প্রাথমিক আরামের জন্য। যদি সমস্যা ৩ দিনের বেশি স্থায়ী হয় বা তীব্র হয়, তবে অবশ্যই বিশেষজ্ঞ ডাক্তারের পরামর্শ নিন।
                   </p>
                 </div>
               </motion.div>

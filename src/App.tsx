@@ -5,7 +5,6 @@ import { getHealthAdvice, generateSpeech, getLiveSession } from './services/gemi
 import BMICalculator from './components/BMICalculator';
 import ExerciseGuide from './components/ExerciseGuide';
 import HealthGuide from './components/HealthGuide';
-import { LiveServerMessage } from '@google/genai';
 
 interface Message {
   id: string;
@@ -38,10 +37,11 @@ export default function App() {
   const recognitionRef = useRef<any>(null);
   const audioContextRef = useRef<AudioContext | null>(null);
   const liveSessionRef = useRef<any>(null);
-  const audioQueueRef = useRef<Int16Array[]>([]);
+  const audioQueueRef = useRef<{data: Int16Array, sampleRate: number}[]>([]);
   const isPlayingRef = useRef(false);
   const isLiveModeRef = useRef(false);
   const audioSourceRef = useRef<MediaStreamAudioSourceNode | null>(null);
+  const currentAudioSourceRef = useRef<AudioBufferSourceNode | null>(null);
   const audioProcessorRef = useRef<ScriptProcessorNode | null>(null);
   const streamRef = useRef<MediaStream | null>(null);
 
@@ -62,6 +62,19 @@ export default function App() {
       recognitionRef.current.onerror = (event: any) => {
         console.error('Speech recognition error:', event.error);
         setIsListening(false);
+        
+        if (event.error === 'not-allowed' || event.error === 'permission-denied') {
+          setLiveError('মাইক্রোফোন ব্যবহারের অনুমতি দেওয়া হয়নি। দয়া করে ব্রাউজারের অ্যাড্রেস বারের লক (🔒) আইকনে ক্লিক করে মাইক্রোফোন ব্যবহারের অনুমতি (Allow) দিন।');
+        } else if (event.error === 'no-speech') {
+          setLiveError('কোনো কথা শোনা যায়নি। অনুগ্রহ করে আবার চেষ্টা করুন।');
+        } else if (event.error === 'network') {
+          setLiveError('ইন্টারনেট সংযোগে সমস্যা হচ্ছে।');
+        } else {
+          setLiveError('ভয়েস ইনপুটে একটি সমস্যা হয়েছে।');
+        }
+        
+        // Auto-clear the error after 5 seconds
+        setTimeout(() => setLiveError(null), 5000);
       };
 
       recognitionRef.current.onend = () => {
@@ -70,16 +83,35 @@ export default function App() {
     }
   }, []);
 
-  const toggleListening = () => {
+  const toggleListening = async () => {
     if (isListening) {
       recognitionRef.current?.stop();
       setIsListening(false);
     } else {
       if (recognitionRef.current) {
-        recognitionRef.current.start();
-        setIsListening(true);
+        try {
+          // Explicitly request microphone permission first to force the browser prompt.
+          // SpeechRecognition often fails with 'not-allowed' in iframes without this.
+          if (navigator.mediaDevices && navigator.mediaDevices.getUserMedia) {
+            const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+            // Stop the stream immediately, we just needed the permission
+            stream.getTracks().forEach(track => track.stop());
+          }
+
+          recognitionRef.current.start();
+          setIsListening(true);
+        } catch (error: any) {
+          console.error("Microphone permission or Speech recognition error:", error);
+          if (error.name === 'NotAllowedError' || error.name === 'PermissionDeniedError') {
+            setLiveError('মাইক্রোফোন ব্যবহারের অনুমতি দেওয়া হয়নি। দয়া করে ব্রাউজারের অ্যাড্রেস বারের লক (🔒) আইকনে ক্লিক করে মাইক্রোফোন ব্যবহারের অনুমতি (Allow) দিন।');
+            setTimeout(() => setLiveError(null), 5000);
+          } else {
+            // Sometimes it throws if already started, just set state
+            setIsListening(true);
+          }
+        }
       } else {
-        alert('আপনার ব্রাউজারটি ভয়েস ইনপুট সমর্থন করে না।');
+        alert('আপনার ব্রাউজারটি ভয়েস ইনপুট (Speech to Text) সমর্থন করে না। দয়া করে ক্রোম (Chrome) ব্রাউজার ব্যবহার করুন।');
       }
     }
   };
@@ -210,6 +242,9 @@ export default function App() {
       
       const AudioContextClass = window.AudioContext || (window as any).webkitAudioContext;
       const audioContext = new AudioContextClass({ sampleRate: 16000 });
+      if (audioContext.state === 'suspended') {
+        await audioContext.resume();
+      }
       audioContextRef.current = audioContext;
       
       const sessionPromise = getLiveSession({
@@ -224,34 +259,60 @@ export default function App() {
             for (let i = 0; i < inputData.length; i++) {
               pcmData[i] = Math.max(-1, Math.min(1, inputData[i])) * 0x7FFF;
             }
-            const base64Data = btoa(String.fromCharCode(...new Uint8Array(pcmData.buffer)));
+            let binary = '';
+            const bytes = new Uint8Array(pcmData.buffer);
+            for (let i = 0; i < bytes.byteLength; i++) {
+              binary += String.fromCharCode(bytes[i]);
+            }
+            const base64Data = btoa(binary);
             sessionPromise.then(session => {
               session.sendRealtimeInput({ audio: { data: base64Data, mimeType: 'audio/pcm;rate=16000' } });
             }).catch(err => console.error("Error sending audio:", err));
           };
           
+          const gainNode = audioContext.createGain();
+          gainNode.gain.value = 0;
+          
           source.connect(processor);
-          processor.connect(audioContext.destination);
+          processor.connect(gainNode);
+          gainNode.connect(audioContext.destination);
           
           audioSourceRef.current = source;
           audioProcessorRef.current = processor;
         },
-        onmessage: async (message: LiveServerMessage) => {
-          if (message.serverContent?.modelTurn?.parts[0]?.inlineData?.data) {
-            const base64Audio = message.serverContent.modelTurn.parts[0].inlineData.data;
-            const binaryString = atob(base64Audio);
-            const bytes = new Uint8Array(binaryString.length);
-            for (let i = 0; i < binaryString.length; i++) {
-              bytes[i] = binaryString.charCodeAt(i);
+        onmessage: async (message: any) => {
+          const parts = message.serverContent?.modelTurn?.parts;
+          if (parts) {
+            for (const part of parts) {
+              if (part.inlineData?.data && part.inlineData?.mimeType?.startsWith('audio/')) {
+                const base64Audio = part.inlineData.data;
+                const binaryString = atob(base64Audio);
+                const bytes = new Uint8Array(binaryString.length);
+                for (let i = 0; i < binaryString.length; i++) {
+                  bytes[i] = binaryString.charCodeAt(i);
+                }
+                const validLength = bytes.length % 2 === 0 ? bytes.length : bytes.length - 1;
+                const pcmData = new Int16Array(bytes.buffer, 0, validLength / 2);
+                
+                let sampleRate = 24000; // Default for output
+                const match = part.inlineData.mimeType.match(/rate=(\d+)/);
+                if (match) {
+                  sampleRate = parseInt(match[1], 10);
+                }
+                
+                audioQueueRef.current.push({ data: pcmData, sampleRate });
+                playNextChunk();
+              }
             }
-            const pcmData = new Int16Array(bytes.buffer);
-            audioQueueRef.current.push(pcmData);
-            playNextChunk();
           }
           
           if (message.serverContent?.interrupted) {
             audioQueueRef.current = [];
             isPlayingRef.current = false;
+            if (currentAudioSourceRef.current) {
+              currentAudioSourceRef.current.stop();
+              currentAudioSourceRef.current = null;
+            }
           }
         },
         onerror: (error: any) => {
@@ -274,7 +335,7 @@ export default function App() {
       if (error.name === 'NotFoundError' || error.name === 'DevicesNotFoundError') {
         message = "আপনার ডিভাইসে কোনো মাইক্রোফোন খুঁজে পাওয়া যায়নি। অনুগ্রহ করে নিশ্চিত করুন যে মাইক্রোফোনটি সংযুক্ত আছে।";
       } else if (error.name === 'NotAllowedError' || error.name === 'PermissionDeniedError') {
-        message = "মাইক্রোফোন ব্যবহারের অনুমতি দেওয়া হয়নি। ব্রাউজারের সেটিংস থেকে মাইক্রোফোন ব্যবহারের অনুমতি দিন।";
+        message = "মাইক্রোফোন ব্যবহারের অনুমতি দেওয়া হয়নি। দয়া করে ব্রাউজারের অ্যাড্রেস বারের লক (🔒) আইকনে ক্লিক করে মাইক্রোফোন ব্যবহারের অনুমতি (Allow) দিন।";
       } else if (error.name === 'NotReadableError' || error.name === 'TrackStartError') {
         message = "মাইক্রোফোনটি অন্য কোনো অ্যাপ ব্যবহার করছে। অন্য অ্যাপটি বন্ধ করে আবার চেষ্টা করুন।";
       } else if (error.name === 'SecurityError') {
@@ -285,15 +346,29 @@ export default function App() {
       
       setLiveError(message);
       setIsLiveMode(false);
+      isLiveModeRef.current = false;
     }
   };
 
   const playNextChunk = () => {
-    if (isPlayingRef.current || audioQueueRef.current.length === 0) return;
+    if (!audioContextRef.current || isPlayingRef.current || audioQueueRef.current.length === 0) return;
     
     isPlayingRef.current = true;
-    const chunk = audioQueueRef.current.shift()!;
-    const audioBuffer = audioContextRef.current!.createBuffer(1, chunk.length, 16000);
+    const item = audioQueueRef.current.shift()!;
+    const chunk = item.data;
+    const sampleRate = item.sampleRate;
+    
+    if (chunk.length === 0) {
+      isPlayingRef.current = false;
+      playNextChunk();
+      return;
+    }
+    
+    if (audioContextRef.current.state === 'suspended') {
+      audioContextRef.current.resume();
+    }
+    
+    const audioBuffer = audioContextRef.current.createBuffer(1, chunk.length, sampleRate);
     const channelData = audioBuffer.getChannelData(0);
     for (let i = 0; i < chunk.length; i++) {
       channelData[i] = chunk[i] / 0x7FFF;
@@ -302,8 +377,10 @@ export default function App() {
     const source = audioContextRef.current!.createBufferSource();
     source.buffer = audioBuffer;
     source.connect(audioContextRef.current!.destination);
+    currentAudioSourceRef.current = source;
     source.onended = () => {
       isPlayingRef.current = false;
+      currentAudioSourceRef.current = null;
       playNextChunk();
     };
     source.start();
@@ -312,6 +389,11 @@ export default function App() {
   const stopLiveMode = () => {
     setIsLiveMode(false);
     isLiveModeRef.current = false;
+    
+    if (currentAudioSourceRef.current) {
+      currentAudioSourceRef.current.stop();
+      currentAudioSourceRef.current = null;
+    }
     
     if (audioProcessorRef.current) {
       audioProcessorRef.current.disconnect();
@@ -433,12 +515,12 @@ export default function App() {
           <motion.div 
             initial={{ opacity: 0, y: -10 }}
             animate={{ opacity: 1, y: 0 }}
-            className="bg-rose-50 border border-rose-100 p-4 rounded-2xl flex items-start gap-3 shadow-sm"
+            className="bg-amber-50 border border-amber-200 p-4 rounded-2xl flex items-start gap-3 shadow-sm"
           >
-            <AlertCircle className="text-rose-500 shrink-0 mt-0.5" size={20} />
+            <AlertCircle className="text-amber-600 shrink-0 mt-0.5" size={20} />
             <div className="space-y-1">
-              <h4 className="text-sm font-bold text-rose-800">চিকিৎসা সংক্রান্ত সতর্কতা</h4>
-              <p className="text-xs text-rose-700 leading-relaxed">
+              <h4 className="text-sm font-bold text-amber-900">চিকিৎসা সংক্রান্ত সতর্কতা</h4>
+              <p className="text-sm text-amber-800 leading-relaxed">
                 এই সহকারীটি কোনোভাবেই পেশাদার চিকিৎসা পরামর্শ, রোগ নির্ণয় বা চিকিৎসার বিকল্প নয়। গুরুতর বা জরুরি অবস্থায় অবিলম্বে নিকটস্থ হাসপাতাল বা ডাক্তারের শরণাপন্ন হোন।
               </p>
             </div>
@@ -477,19 +559,22 @@ export default function App() {
                   {message.image && (
                     <img src={message.image} alt="Uploaded" className="max-w-full h-auto rounded-lg mb-3" />
                   )}
-                  <div className="plain-text-response">
+                  <div className="plain-text-response whitespace-pre-wrap">
                     {message.content}
                   </div>
                   {message.role === 'model' && (
-                    <button
-                      onClick={() => handleTTS(message.content, message.id)}
-                      className={`absolute -right-10 top-2 p-2 rounded-full transition-all opacity-0 group-hover:opacity-100 ${
-                        isSpeaking === message.id ? 'text-primary bg-primary/10' : 'text-slate-400 hover:text-primary hover:bg-slate-100'
-                      }`}
-                      title="শুনুন"
-                    >
-                      <Volume2 size={16} className={isSpeaking === message.id ? 'animate-pulse' : ''} />
-                    </button>
+                    <div className="mt-3 pt-3 border-t border-slate-100 flex justify-end">
+                      <button
+                        onClick={() => handleTTS(message.content, message.id)}
+                        className={`flex items-center gap-1.5 px-3 py-1.5 rounded-lg transition-all text-xs font-medium ${
+                          isSpeaking === message.id ? 'text-primary bg-primary/10' : 'text-slate-500 bg-slate-50 hover:text-primary hover:bg-primary/5'
+                        }`}
+                        title="শুনুন"
+                      >
+                        <Volume2 size={14} className={isSpeaking === message.id ? 'animate-pulse' : ''} />
+                        {isSpeaking === message.id ? 'শুনছেন...' : 'শুনুন'}
+                      </button>
+                    </div>
                   )}
                 </div>
               </motion.div>
@@ -546,10 +631,13 @@ export default function App() {
               </div>
             )}
             {isListening && (
-              <div className="absolute -top-8 left-0 right-0 flex justify-center">
-                <div className="bg-rose-500 text-white text-[10px] px-2 py-0.5 rounded-full animate-pulse flex items-center gap-1">
-                  <div className="w-1 h-1 bg-white rounded-full animate-ping" />
-                  শুনছি... কথা বলুন
+              <div className="absolute -top-10 left-0 right-0 flex justify-center">
+                <div className="bg-rose-500 text-white text-[10px] px-3 py-1 rounded-full animate-pulse flex flex-col items-center gap-0.5 shadow-md">
+                  <div className="flex items-center gap-1 font-medium">
+                    <div className="w-1.5 h-1.5 bg-white rounded-full animate-ping" />
+                    শুনছি... স্পষ্ট করে বলুন
+                  </div>
+                  <span className="text-[8px] opacity-90">সমস্যা হলে উপরের 'লাইভ' বাটনটি ব্যবহার করুন</span>
                 </div>
               </div>
             )}
@@ -602,10 +690,10 @@ export default function App() {
             </div>
           </div>
 
-          <div className="mt-4 flex items-start gap-2 bg-amber-50 p-3 rounded-xl border border-amber-100">
-            <AlertCircle className="text-amber-600 shrink-0 mt-0.5" size={16} />
-            <p className="text-amber-800 text-[11px] leading-relaxed">
-              সতর্কবার্তা: এই সহকারী শুধুমাত্র সাধারণ তথ্যের জন্য। এটি কোনোভাবেই পেশাদার চিকিৎসা পরামর্শ বা চিকিৎসার বিকল্প নয়। গুরুতর সমস্যায় দ্রুত ডাক্তারের শরণাপন্ন হোন।
+          <div className="mt-4 flex items-start gap-3 bg-amber-50 p-3.5 rounded-2xl border border-amber-200 shadow-sm">
+            <AlertCircle className="text-amber-600 shrink-0 mt-0.5" size={18} />
+            <p className="text-amber-800 text-xs leading-relaxed">
+              <strong className="font-semibold text-amber-900">সতর্কবার্তা:</strong> এই সহকারী শুধুমাত্র সাধারণ তথ্যের জন্য। এটি কোনোভাবেই পেশাদার চিকিৎসা পরামর্শ বা চিকিৎসার বিকল্প নয়। গুরুতর সমস্যায় দ্রুত ডাক্তারের শরণাপন্ন হোন।
             </p>
           </div>
           
