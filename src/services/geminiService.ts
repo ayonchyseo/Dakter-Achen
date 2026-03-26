@@ -1,7 +1,13 @@
 import { GoogleGenAI, ThinkingLevel, Modality, Type } from "@google/genai";
 import { getPredefinedAnswer } from "../constants/predefinedAnswers";
 
-const ai = new GoogleGenAI({ apiKey: process.env.GEMINI_API_KEY || "" });
+const apiKey = process.env.GEMINI_API_KEY || (import.meta as any).env?.VITE_GEMINI_API_KEY;
+
+if (!apiKey) {
+  console.warn("GEMINI_API_KEY is not defined. Please check your environment variables.");
+}
+
+const ai = new GoogleGenAI({ apiKey: apiKey || "" });
 
 const SYSTEM_INSTRUCTION = `You are a Bangla health assistant.
 
