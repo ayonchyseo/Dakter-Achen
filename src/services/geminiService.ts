@@ -80,7 +80,7 @@ export async function getHealthAdvice(userQuery: string, useThinking = true) {
   }
 
   try {
-    const model = useThinking ? "gemini-3.1-pro-preview" : "gemini-3.1-flash-lite-preview";
+    const model = useThinking ? "gemini-3.1-pro-preview" : "gemini-3-flash-preview";
     
     const response = await ai.models.generateContent({
       model: model,
@@ -89,28 +89,32 @@ export async function getHealthAdvice(userQuery: string, useThinking = true) {
         systemInstruction: SYSTEM_INSTRUCTION,
         thinkingConfig: useThinking ? { thinkingLevel: ThinkingLevel.HIGH } : undefined,
         tools: [
-          { googleSearch: {} },
-          { googleMaps: {} }
+          { googleSearch: {} }
         ],
       },
     });
 
     return response.text || "দুঃখিত, আমি এই মুহূর্তে কোনো তথ্য দিতে পারছি না।";
-  } catch (error) {
+  } catch (error: any) {
     console.error("Error fetching health advice:", error);
-    // Fallback to a simpler model if the complex one fails
+    
+    // Fallback: Try without tools or thinking if it failed
     try {
       const fallbackResponse = await ai.models.generateContent({
         model: "gemini-3-flash-preview",
         contents: userQuery,
         config: {
           systemInstruction: SYSTEM_INSTRUCTION,
-          tools: [{ googleSearch: {} }],
         },
       });
       return fallbackResponse.text || "দুঃখিত, আমি এই মুহূর্তে কোনো তথ্য দিতে পারছি না।";
-    } catch (fallbackError) {
+    } catch (fallbackError: any) {
       console.error("Fallback error:", fallbackError);
+      
+      if (fallbackError.message?.includes("API_KEY_INVALID") || fallbackError.message?.includes("API key not valid")) {
+        return "দুঃখিত, এপিআই কী (API Key) সঠিক নয়। অনুগ্রহ করে সেটিংস চেক করুন।";
+      }
+      
       return "দুঃখিত, সার্ভারে কোনো সমস্যা হয়েছে। অনুগ্রহ করে আবার চেষ্টা করুন।";
     }
   }

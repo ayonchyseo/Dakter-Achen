@@ -103,7 +103,7 @@ export default function App() {
     setIsLoading(true);
 
     try {
-      const advice = await getHealthAdvice(userMessage.content);
+      const advice = await getHealthAdvice(userMessage.content, useThinking);
       
       const botMessage: Message = {
         id: (Date.now() + 1).toString(),
